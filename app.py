@@ -1,4 +1,8 @@
 import streamlit as st
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import uvicorn
 import os
 from langchain_groq import ChatGroq
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -164,3 +168,24 @@ if human_input := st.chat_input("Tanyakan sesuatu tentang dokumen"):
         )
         with st.chat_message("assistant"):
             st.markdown(assistant_response)
+
+app = FastAPI()
+
+class Query(BaseModel):
+    question: str
+
+@app.post("/api/query")
+async def query(request: Request, query: Query):
+    human_input = query.question
+    if "vectors" in st.session_state and st.session_state.vectors is not None:
+        document_chain = create_stuff_documents_chain(llm, prompt)
+        retriever = st.session_state.vectors.as_retriever()
+        retrieval_chain = create_retrieval_chain(retriever, document_chain)
+        response = retrieval_chain.invoke({"input": human_input})
+        assistant_response = response["answer"]
+        return JSONResponse(content={"response": assistant_response})
+    else:
+        return JSONResponse(content={"response": "Silakan unggah dan proses dokumen sebelum mengajukan pertanyaan."})
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
