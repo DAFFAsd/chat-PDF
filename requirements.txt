@@ -8,3 +8,5 @@ streamlit
 langchain_community
 pypdf
 google-cloud-aiplatform>=1.38
+fastapi
+uvicorn
