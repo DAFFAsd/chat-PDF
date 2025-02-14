@@ -9,228 +9,158 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import tempfile
-import json
-from streamlit.web import WebClient
-from streamlit.runtime.scriptrunner import get_script_run_ctx
 
-# Initialize API key variables
-groq_api_key = None
-google_api_key = None
+# Add logo at the top-left
+st.image(
+    "https://beta.sisva.id/_next/image?url=https%3A%2F%2Fwww.sisva.id%2Fimages%2FSisva-LogoType-Black.png&w=384&q=75",
+    width=150  # Adjust the width as needed
+)
 
-# Initialize FastAPI
-app_api = None
+# Get API keys from secrets
+GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 
-# Add CORS middleware
-# app_api.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["https://beta.sisva.id/"],  # Ganti dengan domain Vercel Anda untuk production
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
+# Set Google API key as environment variable
+os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 
-class ChatRequest(BaseModel):
-    message: str
+# Initialize ChatGroq with the secret API key
+llm = ChatGroq(groq_api_key=GROQ_API_KEY, model_name="deepseek-r1-distill-llama-70b")
 
-# @app_api.post("/upload")
-# async def upload_file(file: UploadFile = File(...)):
-#     try:
-#         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-#             content = await file.read()
-#             temp_file.write(content)
-#             temp_file.seek(0)
-#             # Process the uploaded file using your existing vector_embedding function
-#             vector_embedding([temp_file.name])
-#         return {"message": "File uploaded and processed successfully"}
-#     except Exception as e:
-#         return {"error": str(e)}
-
-# @app_api.post("/chat")
-# async def chat_endpoint(request: ChatRequest):
-#     try:
-#         # Use your existing chat functionality
-#         response = chat_with_docs(request.message)
-#         return {"response": response}
-#     except Exception as e:
-#         return {"error": str(e)}
-
-# Sidebar configuration
+# Konfigurasi sidebar
 with st.sidebar:
-    # Expandable section for application information
-    with st.expander("🔍 About", expanded=True):
+    # Bagian yang dapat diperluas untuk informasi aplikasi
+    with st.expander("🔍 Tentang Aplikasi", expanded=True):
         st.write(
-            "Welcome to **Chat with PDF**! This tool allows you to interact with PDF documents easily. "
-            "Upload your documents and ask questions about their content directly."
+            "Selamat datang di **SISVA Chat with PDF**! Alat ini memungkinkan Anda berinteraksi dengan dokumen PDF dengan mudah. "
+            "Unggah dokumen Anda dan ajukan pertanyaan tentang isinya secara langsung."
         )
-    # Expandable section with usage instructions
-    with st.expander("📝 Guide", expanded=False):
+
+    # Bagian yang dapat diperluas dengan petunjuk penggunaan
+    with st.expander("📝 Panduan", expanded=False):
         st.write(
-            "Follow these steps to use **Chat with PDF**:\n\n"
-            "1. **🔑 Enter API Keys**: Input your Groq and Google API keys in the 'Settings' section.\n"
-            "2. **📄 Upload PDF(s)**: Select and upload the PDFs you want to interact with.\n"
-            "3. **🔍 Process Documents**: Click 'Process Documents' to analyze the PDFs.\n"
-            "4. **💬 Start Chat**: Ask questions in the chat box to receive responses based on the document content.\n"
-            "5. **📑 View Context**: Relevant sections from the documents used for responses will be shown in the chat."
+            "Ikuti langkah-langkah berikut untuk menggunakan **Chat with PDF**:\n\n"
+            "1. **📄 Unggah PDF**: Pilih dan unggah PDF yang ingin Anda interaksikan.\n"
+            "2. **🔍 Proses Dokumen**: Klik 'Proses Dokumen' untuk menganalisis PDF.\n"
+            "3. **💬 Mulai Chat**: Ajukan pertanyaan di kotak chat untuk menerima respons.\n"
+            "4. **📑 Lihat Konteks**: Bagian relevan dari dokumen akan ditampilkan dalam chat."
         )
-    st.header("Settings")
-    st.write(
-        "🔑 **API Keys Required**:\n"
-        "- Get your Groq API key from [Groq API Key Page](https://console.groq.com/keys).\n"
-        "- Get your Google API key from [Google API Key Page](https://aistudio.google.com/app/apikey)."
+
+    # Tentukan template prompt chat
+    prompt = ChatPromptTemplate.from_template(
+        """
+        Anda adalah asisten pendidikan dari badan bernama SISVA.ID yang menggunakan bahasa utama yaitu indonesia dengan sopan dan informatif. 
+        Anda mampu membantu dalam berbagai hal yang berkaitan dengan pendidikan, seperti materi pelajaran, tugas, dan lainnya. 
+        Terkhususnya dari konteks file .pdf yang diberikan ke Anda.
+        
+        Jawablah pertanyaan berdasarkan konteks yang diberikan.
+        Mohon berikan respons yang paling akurat berdasarkan pertanyaan.
+        
+        <context>
+        {context}
+        </context>
+        
+        Pertanyaan: {input}
+        """
     )
-    # Input fields for API keys
-    groq_api_key = st.text_input("Enter your Groq API key:", type="password")
-    google_api_key = st.text_input("Enter your Google API key:", type="password")
-    # Validate API key inputs and initialize components if valid
-    if groq_api_key and google_api_key:
-        # Set Google API key as environment variable
-        os.environ["GOOGLE_API_KEY"] = google_api_key
-        # Initialize ChatGroq with the provided Groq API key
-        llm = ChatGroq(groq_api_key=groq_api_key, model_name="gemma2-9b-it")
-        # Define the chat prompt template
-        prompt = ChatPromptTemplate.from_template(
-            """
-            Answer the questions based on the provided context only.
-            Please provide the most accurate response based on the question.
-            <context>
-            {context}
-            <context>
-            Questions: {input}
-            """
-        )
-        # File uploader for multiple PDFs
-        uploaded_files = st.file_uploader(
-            "Upload PDF(s)", type="pdf", accept_multiple_files=True
-        )
-        # Process uploaded PDFs when the button is clicked
-        if uploaded_files:
-            if st.button("Process Documents"):
-                with st.spinner("Processing documents... Please wait."):
-                    def vector_embedding(uploaded_files):
-                        if "vectors" not in st.session_state:
-                            # Initialize embeddings if not already done
-                            st.session_state.embeddings = GoogleGenerativeAIEmbeddings(
-                                model="models/embedding-001"
-                            )
-                            all_docs = []
-                            # Process each uploaded file
-                            for uploaded_file in uploaded_files:
-                                # Save the uploaded file temporarily
-                                with tempfile.NamedTemporaryFile(
-                                    delete=False, suffix=".pdf"
-                                ) as temp_file:
-                                    temp_file.write(uploaded_file.read())
-                                    temp_file_path = temp_file.name
-                                # Load the PDF document
-                                loader = PyPDFLoader(temp_file_path)
-                                docs = loader.load()  # Load document content
-                                # Remove the temporary file
-                                os.remove(temp_file_path)
-                                # Add loaded documents to the list
-                                all_docs.extend(docs)
-                            # Split documents into manageable chunks
-                            text_splitter = RecursiveCharacterTextSplitter(
-                                chunk_size=1000, chunk_overlap=200
-                            )
-                            final_documents = text_splitter.split_documents(all_docs)
-                            # Create a vector store with FAISS
-                            st.session_state.vectors = FAISS.from_documents(
-                                final_documents, st.session_state.embeddings
-                            )
-                    vector_embedding(uploaded_files)
-                    st.sidebar.write("Documents processed successfully :partying_face:")
-    else:
-        st.error("Please enter both API keys to proceed.")
 
-def set_cors_headers():
-    st.set_page_config(
-        page_title="Chat with PDF",
-        page_icon="📚",
+    # Pengunggah file untuk beberapa PDF
+    uploaded_files = st.file_uploader(
+        "Unggah PDF", type="pdf", accept_multiple_files=True
     )
-    st.markdown("""
-        <style>
-            header {visibility: hidden;}
-        </style>
-    """, unsafe_allow_html=True)
 
-def handle_api_request():
-    set_cors_headers()
-    
-    # Handle POST request untuk upload
-    if st.experimental_get_query_params().get("api") == ["upload"]:
-        uploaded_file = st.file_uploader("Upload a file", type=["pdf"], key="api_upload")
-        if uploaded_file is not None:
-            try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-                    temp_file.write(uploaded_file.getvalue())
-                    vector_embedding([temp_file.name])
-                return json.dumps({"status": "success", "message": "File uploaded and processed successfully"})
-            except Exception as e:
-                return json.dumps({"status": "error", "message": str(e)})
-    
-    # Handle POST request untuk chat
-    elif st.experimental_get_query_params().get("api") == ["chat"]:
-        try:
-            message = st.experimental_get_query_params().get("message", [""])[0]
-            if message:
-                response = chat_with_docs(message)
-                return json.dumps({"status": "success", "response": response})
-            else:
-                return json.dumps({"status": "error", "message": "No message provided"})
-        except Exception as e:
-            return json.dumps({"status": "error", "message": str(e)})
+    # Proses PDF yang diunggah ketika tombol diklik
+    if uploaded_files:
+        if st.button("Proses Dokumen"):
+            with st.spinner("Memproses dokumen... Mohon tunggu."):
 
-    return None
+                def vector_embedding(uploaded_files):
+                    if "vectors" not in st.session_state:
+                        # Inisialisasi embedding jika belum dilakukan
+                        st.session_state.embeddings = GoogleGenerativeAIEmbeddings(
+                            model="models/embedding-001"
+                        )
+                        all_docs = []
 
-api_response = handle_api_request()
-if api_response:
-    st.write(api_response)
-    st.stop()
+                        # Proses setiap file yang diunggah
+                        for uploaded_file in uploaded_files:
+                            # Simpan file yang diunggah sementara
+                            with tempfile.NamedTemporaryFile(
+                                delete=False, suffix=".pdf"
+                            ) as temp_file:
+                                temp_file.write(uploaded_file.read())
+                                temp_file_path = temp_file.name
 
-# Main area for chat interface
+                            # Muat dokumen PDF
+                            loader = PyPDFLoader(temp_file_path)
+                            docs = loader.load()  # Muat konten dokumen
+
+                            # Hapus file sementara
+                            os.remove(temp_file_path)
+
+                            # Tambahkan dokumen yang dimuat ke daftar
+                            all_docs.extend(docs)
+
+                        # Bagi dokumen menjadi bagian-bagian yang dapat dikelola
+                        text_splitter = RecursiveCharacterTextSplitter(
+                            chunk_size=1000, chunk_overlap=200
+                        )
+                        final_documents = text_splitter.split_documents(all_docs)
+
+                        # Buat penyimpanan vektor dengan FAISS
+                        st.session_state.vectors = FAISS.from_documents(
+                            final_documents, st.session_state.embeddings
+                        )
+
+                vector_embedding(uploaded_files)
+                st.sidebar.write("Dokumen berhasil diproses :partying_face:")
+
+# Area utama untuk antarmuka chat
 st.title("Chat with PDF :speech_balloon:")
-# Initialize session state for chat messages if not already done
+
+# Inisialisasi state sesi untuk pesan chat jika belum dilakukan
 if "messages" not in st.session_state:
     st.session_state.messages = []
-# Display chat history
+
+# Tampilkan riwayat chat
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-# Input field for user queries
-if human_input := st.chat_input("Ask something about the document"):
+
+# Input field untuk pertanyaan pengguna
+if human_input := st.chat_input("Tanyakan sesuatu tentang dokumen"):
     st.session_state.messages.append({"role": "user", "content": human_input})
     with st.chat_message("user"):
         st.markdown(human_input)
+
     if "vectors" in st.session_state and st.session_state.vectors is not None:
-        # Create and configure the document chain and retriever
+        # Buat dan konfigurasi rantai dokumen dan pengambil
         document_chain = create_stuff_documents_chain(llm, prompt)
         retriever = st.session_state.vectors.as_retriever()
         retrieval_chain = create_retrieval_chain(retriever, document_chain)
-        # Get response from the assistant
+
+        # Dapatkan respons dari asisten
         response = retrieval_chain.invoke({"input": human_input})
         assistant_response = response["answer"]
-        # Append and display assistant's response
+
+        # Tambahkan dan tampilkan respons asisten
         st.session_state.messages.append(
             {"role": "assistant", "content": assistant_response}
         )
         with st.chat_message("assistant"):
             st.markdown(assistant_response)
-        # Display supporting information from documents
-        with st.expander("Supporting Information"):
+
+        # Tampilkan informasi pendukung dari dokumen
+        with st.expander("Informasi Pendukung"):
             for i, doc in enumerate(response["context"]):
                 st.write(doc.page_content)
                 st.write("--------------------------------")
     else:
-        # Prompt user to upload and process documents if no vectors are available
+        # Minta pengguna untuk mengunggah dan memproses dokumen jika tidak ada vektor yang tersedia
         assistant_response = (
-            "Please upload and process documents before asking questions."
+            "Silakan unggah dan proses dokumen sebelum mengajukan pertanyaan."
         )
         st.session_state.messages.append(
             {"role": "assistant", "content": assistant_response}
         )
         with st.chat_message("assistant"):
             st.markdown(assistant_response)
-
-# Add this at the end of your file
-# if __name__ == "__main__":
-#     uvicorn.run(app_api, host="0.0.0.0", port=8000)
